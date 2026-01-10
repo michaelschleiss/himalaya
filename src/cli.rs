@@ -122,7 +122,18 @@ impl HimalayaCommand {
     pub async fn execute(self, printer: &mut impl Printer, config_paths: &[PathBuf]) -> Result<()> {
         match self {
             Self::Account(cmd) => {
+                // For oauth auth command, skip wizard and use default config
+                // The auth flow will create the config file
+                #[cfg(feature = "oauth2")]
+                let config = if matches!(cmd, AccountSubcommand::Auth(_)) {
+                    TomlConfig::from_default_paths().await.unwrap_or_default()
+                } else {
+                    TomlConfig::from_paths_or_default(config_paths).await?
+                };
+                
+                #[cfg(not(feature = "oauth2"))]
                 let config = TomlConfig::from_paths_or_default(config_paths).await?;
+                
                 cmd.execute(printer, config, config_paths.first()).await
             }
             Self::Folder(cmd) => {
