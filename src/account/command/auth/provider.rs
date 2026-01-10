@@ -28,8 +28,8 @@ impl AuthProvider {
         match self {
             Self::Gmail => ProviderConfig {
                 name: "Gmail",
-                auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
-                token_url: "https://www.googleapis.com/oauth2/v3/token",
+                device_authorization_url: "https://oauth2.googleapis.com/device/code",
+                token_url: "https://www.googleapis.com/oauth2/v4/token",
                 scopes: &["https://www.googleapis.com/auth/gmail.modify"],
                 method: OAuthMethod::XOAuth2,
             },
@@ -60,16 +60,16 @@ impl fmt::Display for OAuthMethod {
 pub struct ProviderConfig {
     /// Provider name (for display)
     pub name: &'static str,
-    
-    /// Authorization endpoint URL
-    pub auth_url: &'static str,
-    
+
+    /// Device authorization endpoint URL (RFC 8628)
+    pub device_authorization_url: &'static str,
+
     /// Token endpoint URL
     pub token_url: &'static str,
-    
+
     /// OAuth scopes to request
     pub scopes: &'static [&'static str],
-    
+
     /// OAuth method for IMAP/SMTP authentication
     pub method: OAuthMethod,
 }
@@ -97,7 +97,7 @@ mod tests {
     fn test_gmail_config() {
         let config = AuthProvider::Gmail.config();
         assert_eq!(config.name, "Gmail");
-        assert!(config.auth_url.contains("accounts.google.com"));
+        assert!(config.device_authorization_url.contains("googleapis.com"));
         assert!(config.token_url.contains("googleapis.com"));
         assert!(config.scopes.contains(&"https://www.googleapis.com/auth/gmail.modify"));
     }

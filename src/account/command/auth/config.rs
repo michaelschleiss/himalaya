@@ -198,7 +198,6 @@ impl ConfigWriter {
 
         auth.insert("type".to_string(), Value::String("oauth2".to_string()));
         auth.insert("method".to_string(), Value::String(provider_config.method.to_string()));
-        auth.insert("auth-url".to_string(), Value::String(provider_config.auth_url.to_string()));
         auth.insert("token-url".to_string(), Value::String(provider_config.token_url.to_string()));
 
         // Store token keyring references
@@ -220,16 +219,6 @@ impl ConfigWriter {
             .and_then(|v| v.as_table_mut())
             .ok_or_else(|| AuthError::ConfigError("Invalid refresh-token table".to_string()))?
             .insert("keyring".to_string(), Value::String(imap_refresh_token_key));
-
-        // PKCE settings
-        auth.insert("pkce".to_string(), Value::Boolean(true));
-        auth.insert("scope".to_string(), Value::Array(
-            provider_config
-                .scopes
-                .iter()
-                .map(|s| Value::String(s.to_string()))
-                .collect(),
-        ));
 
         Ok(())
     }
@@ -292,7 +281,6 @@ impl ConfigWriter {
 
         auth.insert("type".to_string(), Value::String("oauth2".to_string()));
         auth.insert("method".to_string(), Value::String(provider_config.method.to_string()));
-        auth.insert("auth-url".to_string(), Value::String(provider_config.auth_url.to_string()));
         auth.insert("token-url".to_string(), Value::String(provider_config.token_url.to_string()));
 
         // Store token keyring references
@@ -314,16 +302,6 @@ impl ConfigWriter {
             .and_then(|v| v.as_table_mut())
             .ok_or_else(|| AuthError::ConfigError("Invalid refresh-token table".to_string()))?
             .insert("keyring".to_string(), Value::String(smtp_refresh_token_key));
-
-        // PKCE settings
-        auth.insert("pkce".to_string(), Value::Boolean(true));
-        auth.insert("scope".to_string(), Value::Array(
-            provider_config
-                .scopes
-                .iter()
-                .map(|s| Value::String(s.to_string()))
-                .collect(),
-        ));
 
         Ok(())
     }
