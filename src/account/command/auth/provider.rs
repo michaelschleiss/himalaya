@@ -29,7 +29,7 @@ impl AuthProvider {
                 name: "Gmail",
                 auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
                 token_url: "https://www.googleapis.com/oauth2/v4/token",
-                scopes: &["https://www.googleapis.com/auth/gmail.modify"],
+                scopes: &["https://mail.google.com/"],
                 method: OAuthMethod::XOAuth2,
             },
         }
@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(config.name, "Gmail");
         assert!(config.auth_url.contains("google"));
         assert!(config.token_url.contains("googleapis.com"));
-        assert!(config.scopes.contains(&"https://www.googleapis.com/auth/gmail.modify"));
+        assert!(config.scopes.contains(&"https://mail.google.com/"));
     }
 
     #[test]

@@ -68,6 +68,8 @@ impl OAuthAuthenticator {
             self.account_name.clone(),
             self.email.clone(),
             self.provider,
+            self.client_id.clone(),
+            self.client_secret.clone(),
         );
 
         config_writer

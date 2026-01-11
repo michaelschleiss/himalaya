@@ -13,15 +13,25 @@ pub struct ConfigWriter {
     account_name: String,
     email: String,
     provider: AuthProvider,
+    client_id: String,
+    client_secret: String,
 }
 
 impl ConfigWriter {
     /// Create a new config writer
-    pub fn new(account_name: String, email: String, provider: AuthProvider) -> Self {
+    pub fn new(
+        account_name: String,
+        email: String,
+        provider: AuthProvider,
+        client_id: String,
+        client_secret: String,
+    ) -> Self {
         Self {
             account_name,
             email,
             provider,
+            client_id,
+            client_secret,
         }
     }
 
@@ -58,15 +68,31 @@ impl ConfigWriter {
         }
     }
 
-    /// Store OAuth tokens in system keyring
+    /// Store OAuth tokens and client secret in system keyring
     async fn store_tokens_in_keyring(&self, tokens: &OAuthTokens) -> Result<(), AuthError> {
         #[cfg(feature = "keyring")]
         {
             // Generate keyring entry names that will be used by Himalaya
             let imap_access_token_key = format!("{}-imap-access-token", self.account_name);
             let imap_refresh_token_key = format!("{}-imap-refresh-token", self.account_name);
+            let imap_client_secret_key = format!("{}-imap-oauth2-client-secret", self.account_name);
             let smtp_access_token_key = format!("{}-smtp-access-token", self.account_name);
             let smtp_refresh_token_key = format!("{}-smtp-refresh-token", self.account_name);
+            let smtp_client_secret_key = format!("{}-smtp-oauth2-client-secret", self.account_name);
+
+            // Store IMAP client secret
+            KeyringEntry::try_new(&imap_client_secret_key)
+                .map_err(|e| AuthError::KeyringError(format!("Failed to create IMAP client secret entry: {}", e)))?
+                .try_with_secret(&self.client_secret)
+                .await
+                .map_err(|e| AuthError::KeyringError(format!("Failed to store IMAP client secret: {}", e)))?;
+
+            // Store SMTP client secret
+            KeyringEntry::try_new(&smtp_client_secret_key)
+                .map_err(|e| AuthError::KeyringError(format!("Failed to create SMTP client secret entry: {}", e)))?
+                .try_with_secret(&self.client_secret)
+                .await
+                .map_err(|e| AuthError::KeyringError(format!("Failed to store SMTP client secret: {}", e)))?;
 
             // Store IMAP access token
             KeyringEntry::try_new(&imap_access_token_key)
@@ -148,8 +174,9 @@ impl ConfigWriter {
                 AuthError::ConfigError("Invalid account table".to_string())
             })?;
 
-        // Set email
+        // Set email and default
         account.insert("email".to_string(), Value::String(self.email.clone()));
+        account.insert("default".to_string(), Value::Boolean(true));
 
         // Configure IMAP backend
         self.configure_imap_backend(account, &provider_config)?;
@@ -183,6 +210,7 @@ impl ConfigWriter {
             AuthProvider::Gmail => {
                 backend.insert("host".to_string(), Value::String("imap.gmail.com".to_string()));
                 backend.insert("port".to_string(), Value::Integer(993));
+                backend.insert("login".to_string(), Value::String(self.email.clone()));
             }
         }
 
@@ -198,12 +226,27 @@ impl ConfigWriter {
 
         auth.insert("type".to_string(), Value::String("oauth2".to_string()));
         auth.insert("method".to_string(), Value::String(provider_config.method.to_string()));
+        auth.insert("client-id".to_string(), Value::String(self.client_id.clone()));
+        auth.insert("auth-url".to_string(), Value::String(provider_config.auth_url.to_string()));
         auth.insert("token-url".to_string(), Value::String(provider_config.token_url.to_string()));
+        auth.insert("scope".to_string(), Value::String(provider_config.scopes_str()));
+        auth.insert("pkce".to_string(), Value::Boolean(true));
 
-        // Store token keyring references
+        // Store keyring references
         let imap_access_token_key = format!("{}-imap-access-token", self.account_name);
         let imap_refresh_token_key = format!("{}-imap-refresh-token", self.account_name);
+        let imap_client_secret_key = format!("{}-imap-oauth2-client-secret", self.account_name);
 
+        // Client secret keyring reference
+        if !auth.contains_key("client-secret") {
+            auth.insert("client-secret".to_string(), Value::Table(toml::map::Map::new()));
+        }
+        auth.get_mut("client-secret")
+            .and_then(|v| v.as_table_mut())
+            .ok_or_else(|| AuthError::ConfigError("Invalid client-secret table".to_string()))?
+            .insert("keyring".to_string(), Value::String(imap_client_secret_key));
+
+        // Access token keyring reference
         if !auth.contains_key("access-token") {
             auth.insert("access-token".to_string(), Value::Table(toml::map::Map::new()));
         }
@@ -212,6 +255,7 @@ impl ConfigWriter {
             .ok_or_else(|| AuthError::ConfigError("Invalid access-token table".to_string()))?
             .insert("keyring".to_string(), Value::String(imap_access_token_key));
 
+        // Refresh token keyring reference
         if !auth.contains_key("refresh-token") {
             auth.insert("refresh-token".to_string(), Value::Table(toml::map::Map::new()));
         }
@@ -266,6 +310,7 @@ impl ConfigWriter {
             AuthProvider::Gmail => {
                 backend.insert("host".to_string(), Value::String("smtp.gmail.com".to_string()));
                 backend.insert("port".to_string(), Value::Integer(465));
+                backend.insert("login".to_string(), Value::String(self.email.clone()));
             }
         }
 
@@ -281,12 +326,27 @@ impl ConfigWriter {
 
         auth.insert("type".to_string(), Value::String("oauth2".to_string()));
         auth.insert("method".to_string(), Value::String(provider_config.method.to_string()));
+        auth.insert("client-id".to_string(), Value::String(self.client_id.clone()));
+        auth.insert("auth-url".to_string(), Value::String(provider_config.auth_url.to_string()));
         auth.insert("token-url".to_string(), Value::String(provider_config.token_url.to_string()));
+        auth.insert("scope".to_string(), Value::String(provider_config.scopes_str()));
+        auth.insert("pkce".to_string(), Value::Boolean(true));
 
-        // Store token keyring references
+        // Store keyring references
         let smtp_access_token_key = format!("{}-smtp-access-token", self.account_name);
         let smtp_refresh_token_key = format!("{}-smtp-refresh-token", self.account_name);
+        let smtp_client_secret_key = format!("{}-smtp-oauth2-client-secret", self.account_name);
 
+        // Client secret keyring reference
+        if !auth.contains_key("client-secret") {
+            auth.insert("client-secret".to_string(), Value::Table(toml::map::Map::new()));
+        }
+        auth.get_mut("client-secret")
+            .and_then(|v| v.as_table_mut())
+            .ok_or_else(|| AuthError::ConfigError("Invalid client-secret table".to_string()))?
+            .insert("keyring".to_string(), Value::String(smtp_client_secret_key));
+
+        // Access token keyring reference
         if !auth.contains_key("access-token") {
             auth.insert("access-token".to_string(), Value::Table(toml::map::Map::new()));
         }
@@ -295,6 +355,7 @@ impl ConfigWriter {
             .ok_or_else(|| AuthError::ConfigError("Invalid access-token table".to_string()))?
             .insert("keyring".to_string(), Value::String(smtp_access_token_key));
 
+        // Refresh token keyring reference
         if !auth.contains_key("refresh-token") {
             auth.insert("refresh-token".to_string(), Value::Table(toml::map::Map::new()));
         }
