@@ -23,12 +23,11 @@ impl AuthProvider {
         }
     }
 
-    /// Get the OAuth configuration for this provider
     pub fn config(&self) -> ProviderConfig {
         match self {
             Self::Gmail => ProviderConfig {
                 name: "Gmail",
-                device_authorization_url: "https://oauth2.googleapis.com/device/code",
+                auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
                 token_url: "https://www.googleapis.com/oauth2/v4/token",
                 scopes: &["https://www.googleapis.com/auth/gmail.modify"],
                 method: OAuthMethod::XOAuth2,
@@ -61,8 +60,8 @@ pub struct ProviderConfig {
     /// Provider name (for display)
     pub name: &'static str,
 
-    /// Device authorization endpoint URL (RFC 8628)
-    pub device_authorization_url: &'static str,
+    /// Authorization endpoint URL (RFC 6749)
+    pub auth_url: &'static str,
 
     /// Token endpoint URL
     pub token_url: &'static str,
@@ -97,7 +96,7 @@ mod tests {
     fn test_gmail_config() {
         let config = AuthProvider::Gmail.config();
         assert_eq!(config.name, "Gmail");
-        assert!(config.device_authorization_url.contains("googleapis.com"));
+        assert!(config.auth_url.contains("google"));
         assert!(config.token_url.contains("googleapis.com"));
         assert!(config.scopes.contains(&"https://www.googleapis.com/auth/gmail.modify"));
     }

@@ -1,6 +1,6 @@
-use std::time::Duration;
-use tokio::time::{interval, timeout};
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
+use base64::Engine;
 
 use super::error::AuthError;
 use super::provider::{AuthProvider, ProviderConfig};
@@ -13,24 +13,14 @@ pub struct OAuthTokens {
     pub expires_in: Option<u64>,
 }
 
-/// Device authorization request response (RFC 8628)
-#[derive(Debug, Serialize, Deserialize)]
-struct DeviceAuthResponse {
-    device_code: String,
-    user_code: String,
-    verification_url: String,
-    expires_in: u64,
-    #[serde(default)]
-    interval: u64,
-}
-
-/// Token poll request for device flow
+/// Token request for authorization code exchange
 #[derive(Debug, Serialize)]
-struct DeviceTokenRequest {
+struct TokenRequest {
     client_id: String,
     client_secret: String,
-    device_code: String,
+    code: String,
     grant_type: String,
+    code_verifier: String,
 }
 
 /// Token response from token endpoint
@@ -41,11 +31,9 @@ struct TokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<u64>,
-    #[serde(default)]
-    error: Option<String>,
 }
 
-/// OAuth 2.0 Device Authorization Flow handler (RFC 8628)
+/// OAuth 2.0 Authorization Code Flow handler with PKCE (RFC 7636)
 pub struct OAuthFlow {
     provider: AuthProvider,
     client_id: String,
@@ -67,44 +55,146 @@ impl OAuthFlow {
         }
     }
 
-    /// Execute the complete OAuth 2.0 Device Authorization Flow
+    /// Execute the complete OAuth 2.0 Authorization Code Flow with copy-paste pattern
     pub async fn execute(&self) -> Result<OAuthTokens, AuthError> {
         let config = self.provider.config();
 
-        println!("📱 Requesting device authorization code...");
+        // Step 1: Generate PKCE code challenge and verifier
+        let (code_challenge, code_verifier) = Self::generate_pkce_pair();
 
-        // Step 1: Request device code
-        let device_auth = self.request_device_code(&config).await?;
+        // Step 2: Generate state for CSRF protection
+        let state = Self::generate_state();
 
-        // Step 2: Display device code to user
-        println!("\n🔐 Device authorization required!");
-        println!("\nPlease visit this URL on any device:");
-        println!("\n  {}\n", device_auth.verification_url);
-        println!("Enter the code: {}\n", device_auth.user_code);
-        println!("Waiting for authorization (up to {} seconds)...", device_auth.expires_in);
+        // Step 3: Build authorization URL
+        let auth_url = self.build_authorization_url(&config, &state, &code_challenge)?;
 
-        // Step 3: Poll for token with exponential backoff
+        // Step 4: Display authorization URL to user
+        println!("\n🔐 Please visit this URL to authorize Himalaya:\n");
+        println!("  {}\n", auth_url);
+        println!("After authorizing, copy the authorization code from the page.\n");
+
+        // Step 5: Prompt user to paste authorization code
+        let authorization_code = self.prompt_for_authorization_code()?;
+
+        // Step 6: Exchange authorization code for tokens
         let tokens = self
-            .poll_for_token(&config, &device_auth)
+            .exchange_code_for_tokens(&config, &authorization_code, &code_verifier)
             .await?;
 
-        println!("\n✓ Authorization successful");
+        println!("✓ Authorization successful");
 
         Ok(tokens)
     }
 
-    /// Request device authorization code from the provider
-    async fn request_device_code(&self, config: &ProviderConfig) -> Result<DeviceAuthResponse, AuthError> {
-        let client = reqwest::Client::new();
+    /// Generate PKCE code challenge and verifier
+    fn generate_pkce_pair() -> (String, String) {
+        use rand::Rng;
 
+        let mut rng = rand::thread_rng();
+        let verifier: String = (0..128)
+            .map(|_| {
+                let idx = rng.gen_range(0..PKCE_CHARSET.len());
+                PKCE_CHARSET[idx] as char
+            })
+            .collect();
+
+        let mut hasher = Sha256::new();
+        hasher.update(&verifier);
+        let hash = hasher.finalize();
+
+        let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let challenge = engine.encode(&hash[..]);
+
+        (challenge, verifier)
+    }
+
+    /// Generate random state for CSRF protection
+    fn generate_state() -> String {
+        use rand::Rng;
+
+        let mut rng = rand::thread_rng();
+        (0..32)
+            .map(|_| {
+                let idx = rng.gen_range(0..PKCE_CHARSET.len());
+                PKCE_CHARSET[idx] as char
+            })
+            .collect()
+    }
+
+    /// Build the authorization URL
+    fn build_authorization_url(
+        &self,
+        config: &ProviderConfig,
+        state: &str,
+        code_challenge: &str,
+    ) -> Result<String, AuthError> {
         let params = [
             ("client_id", self.client_id.as_str()),
+            ("response_type", "code"),
             ("scope", &config.scopes_str()),
+            ("state", state),
+            ("code_challenge", code_challenge),
+            ("code_challenge_method", "S256"),
+            ("access_type", "offline"),
         ];
 
+        let query = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, urlencoding::encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        Ok(format!("{}?{}", config.auth_url, query))
+    }
+
+    /// Prompt user to enter the authorization code
+    fn prompt_for_authorization_code(&self) -> Result<String, AuthError> {
+        use std::io::{self, BufRead, Write};
+
+        print!("Enter the authorization code: ");
+        io::stdout().flush().map_err(|e| {
+            AuthError::ConfigError(format!("Failed to flush stdout: {}", e))
+        })?;
+
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+        let mut code = String::new();
+        handle.read_line(&mut code).map_err(|e| {
+            AuthError::ConfigError(format!("Failed to read authorization code: {}", e))
+        })?;
+
+        let code = code.trim();
+        if code.is_empty() {
+            return Err(AuthError::ConfigError(
+                "Authorization code cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(code.to_string())
+    }
+
+    /// Exchange authorization code for tokens
+    async fn exchange_code_for_tokens(
+        &self,
+        config: &ProviderConfig,
+        code: &str,
+        code_verifier: &str,
+    ) -> Result<OAuthTokens, AuthError> {
+        let client = reqwest::Client::new();
+
+        let request = TokenRequest {
+            client_id: self.client_id.clone(),
+            client_secret: self.client_secret.clone(),
+            code: code.to_string(),
+            grant_type: "authorization_code".to_string(),
+            code_verifier: code_verifier.to_string(),
+        };
+
+        println!("🔄 Exchanging authorization code for tokens...");
+
         let response = client
-            .post(config.device_authorization_url)
-            .form(&params)
+            .post(config.token_url)
+            .json(&request)
             .send()
             .await
             .map_err(|e| AuthError::NetworkError(e.to_string()))?;
@@ -115,115 +205,31 @@ impl OAuthFlow {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             return Err(AuthError::TokenExchangeFailed(format!(
-                "Failed to get device code: {}",
+                "Failed to exchange authorization code: {}",
                 error_text
             )));
         }
 
-        response
-            .json::<DeviceAuthResponse>()
+        let token_response: TokenResponse = response
+            .json()
             .await
             .map_err(|e| AuthError::TokenExchangeFailed(format!(
-                "Failed to parse device auth response: {}",
+                "Failed to parse token response: {}",
                 e
-            )))
-    }
+            )))?;
 
-    /// Poll token endpoint until user authorizes or flow expires
-    async fn poll_for_token(
-        &self,
-        config: &ProviderConfig,
-        device_auth: &DeviceAuthResponse,
-    ) -> Result<OAuthTokens, AuthError> {
-        let client = reqwest::Client::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(device_auth.expires_in);
+        println!("✓ Tokens obtained");
 
-        // Use suggested interval, minimum 1 second
-        let poll_interval = Duration::from_secs(std::cmp::max(device_auth.interval, 1));
-        let mut interval_handle = interval(poll_interval);
-
-        loop {
-            // Check if we've exceeded the expiration time
-            if tokio::time::Instant::now() >= deadline {
-                return Err(AuthError::CallbackTimeout);
-            }
-
-            // Wait before next poll (except first time)
-            interval_handle.tick().await;
-
-            // Prepare token request
-            let request_body = DeviceTokenRequest {
-                client_id: self.client_id.clone(),
-                client_secret: self.client_secret.clone(),
-                device_code: device_auth.device_code.clone(),
-                grant_type: "urn:ietf:params:oauth:grant-type:device_code".to_string(),
-            };
-
-            // Poll token endpoint
-            let response = match timeout(Duration::from_secs(10),
-                client.post(config.token_url).json(&request_body).send()
-            ).await {
-                Ok(Ok(resp)) => resp,
-                Ok(Err(e)) => {
-                    return Err(AuthError::NetworkError(e.to_string()));
-                }
-                Err(_) => {
-                    return Err(AuthError::NetworkError("Token endpoint timeout".to_string()));
-                }
-            };
-
-            if !response.status().is_success() {
-                let error_text = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "Unknown error".to_string());
-                return Err(AuthError::TokenExchangeFailed(error_text));
-            }
-
-            let token_response: TokenResponse = response
-                .json()
-                .await
-                .map_err(|e| AuthError::TokenExchangeFailed(format!(
-                    "Failed to parse token response: {}",
-                    e
-                )))?;
-
-            // Check for authorization_pending (user hasn't authorized yet)
-            if let Some(error) = token_response.error {
-                match error.as_str() {
-                    "authorization_pending" => {
-                        // User hasn't authorized yet, keep polling
-                        continue;
-                    }
-                    "slow_down" => {
-                        // Server asked us to slow down, increase interval
-                        interval_handle = interval(poll_interval * 2);
-                        continue;
-                    }
-                    "expired_token" => {
-                        return Err(AuthError::CallbackTimeout);
-                    }
-                    "access_denied" => {
-                        return Err(AuthError::UserCancelled);
-                    }
-                    _ => {
-                        return Err(AuthError::TokenExchangeFailed(error));
-                    }
-                }
-            }
-
-            // Success! We got tokens
-            println!("🔄 Exchanging device code for tokens...");
-            println!("✓ Tokens obtained");
-
-            return Ok(OAuthTokens {
-                access_token: token_response.access_token,
-                refresh_token: token_response.refresh_token,
-                expires_in: token_response.expires_in,
-            });
-        }
+        Ok(OAuthTokens {
+            access_token: token_response.access_token,
+            refresh_token: token_response.refresh_token,
+            expires_in: token_response.expires_in,
+        })
     }
 }
+
+/// Characters allowed in PKCE code verifier (RFC 7636)
+const PKCE_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 
 #[cfg(test)]
 mod tests {
@@ -239,5 +245,35 @@ mod tests {
 
         assert_eq!(tokens.access_token, "test_token");
         assert!(tokens.refresh_token.is_some());
+    }
+
+    #[test]
+    fn test_pkce_pair_generation() {
+        let (challenge, verifier) = OAuthFlow::generate_pkce_pair();
+
+        // Verify challenge and verifier are not empty
+        assert!(!challenge.is_empty());
+        assert!(!verifier.is_empty());
+
+        // Verifier should be 128 chars
+        assert_eq!(verifier.len(), 128);
+
+        // Challenge should be URL-safe base64 encoded (no padding)
+        assert!(!challenge.contains("+"));
+        assert!(!challenge.contains("/"));
+        assert!(!challenge.contains("="));
+    }
+
+    #[test]
+    fn test_state_generation() {
+        let state = OAuthFlow::generate_state();
+
+        // State should be 32 characters
+        assert_eq!(state.len(), 32);
+
+        // State should only contain valid PKCE characters
+        for c in state.chars() {
+            assert!(PKCE_CHARSET.contains(&(c as u8)));
+        }
     }
 }
