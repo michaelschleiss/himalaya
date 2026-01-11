@@ -1843,6 +1843,7 @@ dependencies = [
  "once_cell",
  "open",
  "pimalaya-tui",
+ "rand",
  "reqwest",
  "secret-lib",
  "serde",
@@ -1853,6 +1854,7 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "urlencoding",
  "uuid 0.8.2",
 ]
 

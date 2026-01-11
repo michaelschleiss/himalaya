@@ -1,0 +1,10 @@
+[workspace]
+authors = ["michaelschleiss <michaelschleiss@gmx.de>"]
+channels = ["conda-forge"]
+name = "himalaya"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]

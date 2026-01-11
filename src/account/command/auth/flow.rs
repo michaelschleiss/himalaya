@@ -21,6 +21,7 @@ struct TokenRequest {
     code: String,
     grant_type: String,
     code_verifier: String,
+    redirect_uri: String,
 }
 
 /// Token response from token endpoint
@@ -132,6 +133,7 @@ impl OAuthFlow {
             ("client_id", self.client_id.as_str()),
             ("response_type", "code"),
             ("scope", &config.scopes_str()),
+            ("redirect_uri", "urn:ietf:wg:oauth:2.0:oob"),
             ("state", state),
             ("code_challenge", code_challenge),
             ("code_challenge_method", "S256"),
@@ -188,6 +190,7 @@ impl OAuthFlow {
             code: code.to_string(),
             grant_type: "authorization_code".to_string(),
             code_verifier: code_verifier.to_string(),
+            redirect_uri: "urn:ietf:wg:oauth:2.0:oob".to_string(),
         };
 
         println!("🔄 Exchanging authorization code for tokens...");
